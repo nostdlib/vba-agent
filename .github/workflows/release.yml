@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g., v1.0.0)"
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Static checks (ASCII / line length / contract / structure)
+        run: |
+          f=src/vba-agent.bas
+
+          if LC_ALL=C grep -nPq '[^\x00-\x7F]' "$f"; then
+            echo "FAILED: non-ASCII bytes in source"; exit 1
+          fi
+          if [ "$(head -c3 "$f" | od -An -tx1 | tr -d ' \n')" = "efbbbf" ]; then
+            echo "FAILED: UTF-8 BOM in source"; exit 1
+          fi
+          long=$(awk 'length($0) > 1023 {print FILENAME":"NR}' "$f")
+          if [ -n "$long" ]; then
+            echo "FAILED: lines over 1023 chars:"; echo "$long"; exit 1
+          fi
+          first=$(head -1 "$f")
+          if [ "$first" != 'Attribute VB_Name = "C2Agent"' ]; then
+            echo "FAILED: first line must be the module attribute, got: $first"; exit 1
+          fi
+          grep -q 'Public Function RunAgent()' "$f" \
+            || { echo "FAILED: 'Public Function RunAgent()' needle missing"; exit 1; }
+          pub=$(grep -c '^Public ' "$f" || true)
+          [ "$pub" -eq 1 ] || { echo "FAILED: expected 1 public symbol, found $pub"; exit 1; }
+          subs=$(grep -cE '^(Private |Public )?Sub ' "$f" || true)
+          esubs=$(grep -c '^End Sub' "$f" || true)
+          funcs=$(grep -cE '^(Private |Public )?Function ' "$f" || true)
+          efuncs=$(grep -c '^End Function' "$f" || true)
+          [ "$subs" -eq "$esubs" ] || { echo "FAILED: Sub/End Sub imbalance ($subs/$esubs)"; exit 1; }
+          [ "$funcs" -eq "$efuncs" ] || { echo "FAILED: Function/End Function imbalance ($funcs/$efuncs)"; exit 1; }
+          echo "static checks OK"
+
+      - name: Collect release files
+        run: |
+          mkdir -p artifacts
+          cp src/vba-agent.bas artifacts/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-vba
+          retention-days: 1
+          path: artifacts/
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: release-*
+
+      - name: Collect release files
+        run: |
+          mkdir -p release-files
+          find artifacts -type f -exec cp {} release-files/ \;
+          echo "Release files:"
+          ls -lh release-files/
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-files/* --clobber
+          else
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --generate-notes \
+              release-files/*
+          fi

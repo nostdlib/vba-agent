@@ -1,0 +1,189 @@
+name: Build & Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - "**"
+
+concurrency:
+  group: ci-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  # ═════════════════════════════════════════════════════════════════════════
+  # Build — static contract checks on the single VBA module.
+  # GitHub runners have no Office, so VBA cannot be executed in CI; these
+  # checks are everything that can be verified statically.
+  # ═════════════════════════════════════════════════════════════════════════
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Static checks (ASCII / line length / contract / structure)
+        run: |
+          f=src/vba-agent.bas
+
+          # pure ASCII, no BOM -- the VBE imports ANSI/ASCII sources
+          if LC_ALL=C grep -nPq '[^\x00-\x7F]' "$f"; then
+            echo "FAILED: non-ASCII bytes in source:"
+            LC_ALL=C grep -nP '[^\x00-\x7F]' "$f" | head -5
+            exit 1
+          fi
+          if [ "$(head -c3 "$f" | od -An -tx1 | tr -d ' \n')" = "efbbbf" ]; then
+            echo "FAILED: UTF-8 BOM in source"; exit 1
+          fi
+
+          # VBA's hard 1023-char line limit
+          long=$(awk 'length($0) > 1023 {print FILENAME":"NR" ("length($0)" chars)"}' "$f")
+          if [ -n "$long" ]; then
+            echo "FAILED: lines over 1023 chars:"
+            echo "$long"
+            exit 1
+          fi
+
+          # module contract: attribute header, the public needle, exactly one public symbol
+          first=$(head -1 "$f")
+          if [ "$first" != 'Attribute VB_Name = "C2Agent"' ]; then
+            echo "FAILED: first line must be the module attribute, got: $first"
+            exit 1
+          fi
+          grep -q 'Public Function RunAgent()' "$f" \
+            || { echo "FAILED: 'Public Function RunAgent()' needle missing"; exit 1; }
+          pub=$(grep -c '^Public ' "$f" || true)
+          if [ "$pub" -ne 1 ]; then
+            echo "FAILED: expected exactly 1 public symbol, found $pub"
+            exit 1
+          fi
+
+          # balanced structure
+          subs=$(grep -cE '^(Private |Public )?Sub ' "$f" || true)
+          esubs=$(grep -c '^End Sub' "$f" || true)
+          funcs=$(grep -cE '^(Private |Public )?Function ' "$f" || true)
+          efuncs=$(grep -c '^End Function' "$f" || true)
+          echo "subs=$subs/$esubs functions=$funcs/$efuncs"
+          [ "$subs" -eq "$esubs" ] || { echo "FAILED: Sub/End Sub imbalance ($subs/$esubs)"; exit 1; }
+          [ "$funcs" -eq "$efuncs" ] || { echo "FAILED: Function/End Function imbalance ($funcs/$efuncs)"; exit 1; }
+
+          echo "static checks OK"
+
+      - name: Workflow YAML sanity
+        run: |
+          python3 - <<'EOF'
+          import yaml
+          for p in ['.github/workflows/build.yml', '.github/workflows/release.yml']:
+              yaml.safe_load(open(p, encoding='utf-8'))
+              print(p, 'YAML OK')
+          EOF
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-vba
+          retention-days: 1
+          path: src/
+
+  # ═════════════════════════════════════════════════════════════════════════
+  # Gate — single required check for branch protection
+  # ═════════════════════════════════════════════════════════════════════════
+
+  all-tests:
+    if: always()
+    needs:
+      - build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check all test results
+        run: |
+          echo "Build: ${{ needs.build.result }}"
+          results=(
+            "${{ needs.build.result }}"
+          )
+          for r in "${results[@]}"; do
+            if [ "$r" != "success" ]; then
+              echo "One or more jobs failed or were cancelled"
+              exit 1
+            fi
+          done
+          echo "All tests passed"
+
+  # ═════════════════════════════════════════════════════════════════════════
+  # Preview Release — publish rolling pre-release from main
+  # ═════════════════════════════════════════════════════════════════════════
+  preview-build:
+    if: github.ref == 'refs/heads/main'
+    needs: [all-tests]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Collect release files
+        run: |
+          mkdir -p artifacts
+          cp src/vba-agent.bas artifacts/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: preview-vba
+          retention-days: 1
+          path: artifacts/
+
+  preview-release:
+    if: github.ref == 'refs/heads/main'
+    needs: [preview-build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: preview-*
+
+      - name: Collect release files
+        run: |
+          mkdir -p release-files
+          find artifacts -type f -exec cp {} release-files/ \;
+          echo "Release files:"
+          ls -lh release-files/
+
+      - name: Create or update preview release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="preview"
+          TITLE="Preview (${GITHUB_SHA::7})"
+          BODY="Automated preview release from \`main\` branch.
+
+          **Commit:** [\`${GITHUB_SHA::7}\`](https://github.com/${{ github.repository }}/commit/${GITHUB_SHA})
+          **Date:** $(date -u '+%Y-%m-%d %H:%M UTC')
+
+          > This is a rolling pre-release that updates on every merge to \`main\`.
+          > For stable releases, see tagged versions (\`v*\`)."
+
+          # Delete existing preview release and tag if they exist
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+
+          # Create fresh pre-release
+          gh release create "$TAG" \
+            --title "$TITLE" \
+            --notes "$BODY" \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            release-files/*
