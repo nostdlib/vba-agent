@@ -29,7 +29,8 @@ shared.
 ## Host indicators
 
 - **VBA project contents.** A module named `C2Agent` with
-  `Public Function RunAgent()`; the one native declare is
+  `Public Function RunAgent(Optional ByVal beaconUrl As String = "")`;
+  the one native declare is
   `Sleep` from `kernel32`. Look for the marker strings:
   `RunAgent`, `H_URL`, `MSXML2.ServerXMLHTTP`, `X-Log-Only`,
   `winmgmts:` / `StdRegProv`, `Win32_ComputerSystemProduct`,
