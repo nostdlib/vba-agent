@@ -54,8 +54,8 @@ jobs:
             echo "FAILED: first line must be the module attribute, got: $first"
             exit 1
           fi
-          grep -q 'Public Function RunAgent()' "$f" \
-            || { echo "FAILED: 'Public Function RunAgent()' needle missing"; exit 1; }
+          grep -q 'Public Function RunAgent(' "$f" \
+            || { echo "FAILED: 'Public Function RunAgent(' needle missing"; exit 1; }
           pub=$(grep -c '^Public ' "$f" || true)
           if [ "$pub" -ne 1 ]; then
             echo "FAILED: expected exactly 1 public symbol, found $pub"

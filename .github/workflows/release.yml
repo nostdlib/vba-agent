@@ -38,8 +38,8 @@ jobs:
           if [ "$first" != 'Attribute VB_Name = "C2Agent"' ]; then
             echo "FAILED: first line must be the module attribute, got: $first"; exit 1
           fi
-          grep -q 'Public Function RunAgent()' "$f" \
-            || { echo "FAILED: 'Public Function RunAgent()' needle missing"; exit 1; }
+          grep -q 'Public Function RunAgent(' "$f" \
+            || { echo "FAILED: 'Public Function RunAgent(' needle missing"; exit 1; }
           pub=$(grep -c '^Public ' "$f" || true)
           [ "$pub" -eq 1 ] || { echo "FAILED: expected 1 public symbol, found $pub"; exit 1; }
           subs=$(grep -cE '^(Private |Public )?Sub ' "$f" || true)

